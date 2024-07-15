@@ -41,6 +41,8 @@ export default class CallCard extends React.Component {
         this.capabilitiesFeature = this.call.feature(Features.Capabilities);
         this.capabilities = this.capabilitiesFeature.capabilities;
         this.dominantSpeakersFeature = this.call.feature(Features.DominantSpeakers);
+        this.recordingFeature = this.call.feature(Features.Recording);
+        this.transcriptionFeature = this.call.feature(Features.Transcription);
         if (Features.Reaction) {
             this.meetingReaction = this.call.feature(Features.Reaction);
         }
@@ -62,6 +64,7 @@ export default class CallCard extends React.Component {
             canShareScreen: this.capabilities.shareScreen?.isPresent || this.capabilities.shareScreen?.reason === 'FeatureNotSupported',
             canRaiseHands: this.capabilities.raiseHand?.isPresent || this.capabilities.raiseHand?.reason === 'FeatureNotSupported',
             canSpotlight: this.capabilities.spotlightParticipant?.isPresent || this.capabilities.spotlightParticipant?.reason === 'FeatureNotSupported',
+            canMuteOthers: this.capabilities.muteOthers?.isPresent || this.capabilities.muteOthers?.reason === 'FeatureNotSupported',
             canReact: this.capabilities.useReactions?.isPresent || this.capabilities.useReactions?.reason === 'FeatureNotSupported',
             videoOn: this.call.isLocalVideoStarted,
             screenSharingOn: this.call.isScreenSharingOn,
@@ -75,6 +78,7 @@ export default class CallCard extends React.Component {
             selectedCameraDeviceId: props.selectedCameraDeviceId,
             selectedSpeakerDeviceId: this.deviceManager.selectedSpeaker?.id,
             selectedMicrophoneDeviceId: this.deviceManager.selectedMicrophone?.id,
+            isShowParticipants: false,
             showSettings: false,
             // StartWithNormal or StartWithDummy
             localScreenSharingMode: undefined,
@@ -94,7 +98,9 @@ export default class CallCard extends React.Component {
             showDataChannel: false,
             showAddParticipantPanel: false,
             reactionRows:[],
-            pptLiveActive: false
+            pptLiveActive: false,
+            isRecordingActive: false,
+            isTranscriptionActive: false
         };
         this.selectedRemoteParticipants = new Set();
         this.dataChannelRef = React.createRef();
@@ -121,6 +127,8 @@ export default class CallCard extends React.Component {
         this.call.feature(Features.Spotlight).off('spotlightChanged', this.spotlightStateChangedHandler);
         this.call.feature(Features.RaiseHand).off('raisedHandEvent', this.raiseHandChangedHandler);
         this.call.feature(Features.RaiseHand).off('loweredHandEvent', this.raiseHandChangedHandler);
+        this.recordingFeature.off('isRecordingActiveChanged', this.isRecordingActiveChangedHandler);
+        this.transcriptionFeature.off('isTranscriptionActiveChanged', this.isTranscriptionActiveChangedHandler);
         if (Features.Reaction) {
             this.call.feature(Features.Reaction).off('reaction', this.reactionChangeHandler);
         }
@@ -253,6 +261,14 @@ export default class CallCard extends React.Component {
                     }
                     this.setState({ localScreenSharingMode: undefined });
                 }
+            });
+
+            this.call.on('mutedByOthers', () => {
+                const messageBarText = 'You have been muted by someone else. Unmute to speak.';
+                this.setState(prevState => ({
+                    ...prevState,
+                    callMessage: `${prevState.callMessage ? prevState.callMessage + `\n` : ``} ${messageBarText}.`
+                }));
             });
 
             const handleParticipant = (participant) => {
@@ -441,6 +457,8 @@ export default class CallCard extends React.Component {
             this.dominantSpeakersFeature.on('dominantSeapkersChanged', this.dominantSpeakersChanged);
             this.meetingReaction?.on('reaction', this.reactionChangeHandler);
             this.pptLiveFeature?.on('isActiveChanged', this.pptLiveChangedHandler);
+            this.recordingFeature.on('isRecordingActiveChanged', this.isRecordingActiveChangedHandler);
+            this.transcriptionFeature.on('isTranscriptionActiveChanged', this.isTranscriptionActiveChangedHandler);
         }
     }
 
@@ -500,6 +518,14 @@ export default class CallCard extends React.Component {
     spotlightStateChangedHandler = (event) => {
         this.setState({isSpotlighted: utils.isParticipantSpotlighted(
             this.identifier, this.spotlightFeature.getSpotlightedParticipants())})
+    }
+
+    isRecordingActiveChangedHandler = (event) => {
+        this.setState({ isRecordingActive: this.recordingFeature.isRecordingActive })
+    }
+
+    isTranscriptionActiveChangedHandler = (event) => {
+        this.setState({ isTranscriptionActive: this.transcriptionFeature.isTranscriptionActive })
     }
 
     raiseHandChangedHandler = (event) => {
@@ -585,6 +611,10 @@ export default class CallCard extends React.Component {
             }
             if(key === 'raiseHand' && value.reason != 'FeatureNotSupported') {
                 (value.isPresent) ? this.setState({ canRaiseHands: true }) : this.setState({ canRaiseHands: false });
+                continue;
+            }
+            if(key === 'muteOthers' && value.reason != 'FeatureNotSupported') {
+                (value.isPresent) ? this.setState({ canMuteOthers: true }) : this.setState({ canMuteOthers: false });
                 continue;
             }
             if(key === 'reaction' && value.reason != 'FeatureNotSupported') {
@@ -1100,7 +1130,7 @@ export default class CallCard extends React.Component {
                         </MessageBar>
                     }
                 </div>
-                <div className="ms-Grid-row">
+                <div className="ms-Grid-row mb-3">
                     <div className="ms-Grid-col ms-lg6">
                         <div>
                             {
@@ -1108,6 +1138,11 @@ export default class CallCard extends React.Component {
                                 <div className="inline-block ringing-loader mr-2"></div>
                             }
                             <h2 className="inline-block">{this.state.callState !== 'Connected' ? `${this.state.callState}...` : `Connected`}</h2>
+                            {
+                                this.state.isRecordingActive && this.state.isTranscriptionActive ? <div>Recording and transcription are active</div> :
+                                this.state.isRecordingActive ? <div>Recording is active</div> :
+                                this.state.isTranscriptionActive ? <div>Transcription is active</div> : null
+                            }
                         </div>
                     </div>
                     {
@@ -1115,39 +1150,86 @@ export default class CallCard extends React.Component {
                         <CurrentCallInformation sentResolution={this.state.sentResolution} call={this.call} />
                     }
                 </div>
-                <div className="video-grid-row">
+                <div className="ms-Grid-row">
+                    <div className="ms-Grid-col">
+                        <h2 className="inline-block" onClick={() => this.setState({isShowParticipants: !this.state.isShowParticipants})}>&equiv; Participants</h2>
+                    </div>
+                </div>
+                <div className="ms-Grid-row">
                     {
-                        (this.state.callState === 'Connected' ||
-                            this.state.callState === 'LocalHold' ||
-                            this.state.callState === 'RemoteHold') &&
-                        this.state.allRemoteParticipantStreams.map(v =>
-                            <StreamRenderer
-                                key={`${utils.getIdentifierText(v.participant.identifier)}-${v.stream.mediaStreamType}-${v.stream.id}`}
-                                ref={v.streamRendererComponentRef}
-                                stream={v.stream}
-                                remoteParticipant={v.participant}
-                                dominantSpeakerMode={this.state.dominantSpeakerMode}
-                                dominantRemoteParticipant={this.state.dominantRemoteParticipant}
-                                call={this.call}
-                                showMediaStats={this.state.logMediaStats}
-                            />
-                        )
+                        this.state.callState === 'Connected' && this.state.isShowParticipants &&
+                        <div className="ms-Grid-col ms-lg4">
+                            <div>
+                                {   this.state.showAddParticipantPanel &&
+                                    <AddParticipantPopover call={this.call} />
+                                }
+                            </div>
+                            <div>
+                                <Lobby call={this.call} capabilitiesFeature={this.capabilitiesFeature}/>
+                            </div>
+                            {
+                                this.state.dominantSpeakerMode &&
+                                <div>
+                                    Current dominant speaker: {this.state.dominantRemoteParticipant ? utils.getIdentifierText(this.state.dominantRemoteParticipant.identifier) : `None`}
+                                </div>
+                            }
+                            {
+                                this.state.remoteParticipants.length === 0 &&
+                                <p>No other participants currently in the call</p>
+                            }
+                            <ul className="p-0 m-0">
+                                {
+                                    this.state.remoteParticipants.map(remoteParticipant =>
+                                        <RemoteParticipantCard
+                                            key={`${utils.getIdentifierText(remoteParticipant.identifier)}`}
+                                            remoteParticipant={remoteParticipant}
+                                            call={this.call}
+                                            menuOptionsHandler={this.getParticipantMenuCallBacks()}
+                                            onSelectionChanged={(identifier, isChecked) => this.remoteParticipantSelectionChanged(identifier, isChecked)}
+                                            capabilitiesFeature={this.capabilitiesFeature}
+                                            />
+                                    )
+                                }
+                            </ul>
+                            
+                        </div>
                     }
-                    {
-                        (
-                            this.state.remoteScreenShareStream &&
-                                <StreamRenderer
-                                    key={`${utils.getIdentifierText(this.state.remoteScreenShareStream.participant.identifier)}-${this.state.remoteScreenShareStream.stream.mediaStreamType}-${this.state.remoteScreenShareStream.stream.id}`}
-                                    ref={this.state.remoteScreenShareStream.streamRendererComponentRef}
-                                    stream={this.state.remoteScreenShareStream.stream}
-                                    remoteParticipant={this.state.remoteScreenShareStream.participant}
-                                    dominantSpeakerMode={this.state.dominantSpeakerMode}
-                                    dominantRemoteParticipant={this.state.dominantRemoteParticipant}
-                                    call={this.call}
-                                    showMediaStats={this.state.logMediaStats}
-                                />
-                        )
-                    }
+                    <div className={this.state.isShowParticipants ? "ms-Grid-col ms-lg8" : undefined}>
+                        <div className="video-grid-row">
+                            {
+                                (this.state.callState === 'Connected' ||
+                                    this.state.callState === 'LocalHold' ||
+                                    this.state.callState === 'RemoteHold') &&
+                                this.state.allRemoteParticipantStreams.map(v =>
+                                    <StreamRenderer
+                                        key={`${utils.getIdentifierText(v.participant.identifier)}-${v.stream.mediaStreamType}-${v.stream.id}`}
+                                        ref={v.streamRendererComponentRef}
+                                        stream={v.stream}
+                                        remoteParticipant={v.participant}
+                                        dominantSpeakerMode={this.state.dominantSpeakerMode}
+                                        dominantRemoteParticipant={this.state.dominantRemoteParticipant}
+                                        call={this.call}
+                                        showMediaStats={this.state.logMediaStats}
+                                    />
+                                )
+                            }
+                            {
+                                (
+                                    this.state.remoteScreenShareStream &&
+                                        <StreamRenderer
+                                            key={`${utils.getIdentifierText(this.state.remoteScreenShareStream.participant.identifier)}-${this.state.remoteScreenShareStream.stream.mediaStreamType}-${this.state.remoteScreenShareStream.stream.id}`}
+                                            ref={this.state.remoteScreenShareStream.streamRendererComponentRef}
+                                            stream={this.state.remoteScreenShareStream.stream}
+                                            remoteParticipant={this.state.remoteScreenShareStream.participant}
+                                            dominantSpeakerMode={this.state.dominantSpeakerMode}
+                                            dominantRemoteParticipant={this.state.dominantRemoteParticipant}
+                                            call={this.call}
+                                            showMediaStats={this.state.logMediaStats}
+                                        />
+                                )
+                            }
+                        </div>
+                    </div>
                 </div>
                 <div className="ms-Grid-row">
                     <div className="text-center">
@@ -1242,12 +1324,15 @@ export default class CallCard extends React.Component {
                                 <Icon iconName="Volume2" />
                             }
                         </span>
-                        <span className="in-call-button"
-                            title={`Mute all other participants`}
-                            variant="secondary"
-                            onClick={() => this.handleMuteAllRemoteParticipants()}>
-                            <Icon iconName="VolumeDisabled" />
-                        </span>
+                        {
+                            this.state.canMuteOthers &&
+                            <span className="in-call-button"
+                                title={`Mute all other participants`}
+                                variant="secondary"
+                                onClick={() => this.handleMuteAllRemoteParticipants()}>
+                                <Icon iconName="VolumeDisabled" />
+                            </span>
+                        }
                         <span className="in-call-button"
                             title={`${this.state.screenSharingOn && this.localScreenSharingStream?.mediaStreamType === 'RawMedia' ? 'Stop' : 'Start'} screen sharing a dummy stream`}
                             variant="secondary"
@@ -1649,46 +1734,6 @@ export default class CallCard extends React.Component {
                             </table>
                         </div>
                     </div>
-                }
-                {
-                    this.state.callState === 'Connected' &&
-                    <div className="mt-5">
-                        <div className="ms-Grid-row">
-                            <h2>Participants</h2>
-                        </div>
-                        <div>
-                            {   this.state.showAddParticipantPanel &&
-                                <AddParticipantPopover call={this.call} />
-                            }
-                        </div>
-                        <div>
-                            <Lobby call={this.call}/>
-                        </div>
-                        {
-                            this.state.dominantSpeakerMode &&
-                            <div>
-                                Current dominant speaker: {this.state.dominantRemoteParticipant ? utils.getIdentifierText(this.state.dominantRemoteParticipant.identifier) : `None`}
-                            </div>
-                        }
-                        {
-                            this.state.remoteParticipants.length === 0 &&
-                            <p>No other participants currently in the call</p>
-                        }
-                        <ul className="p-0 m-0">
-                            {
-                                this.state.remoteParticipants.map(remoteParticipant =>
-                                    <RemoteParticipantCard
-                                        key={`${utils.getIdentifierText(remoteParticipant.identifier)}`}
-                                        remoteParticipant={remoteParticipant}
-                                        call={this.call}
-                                        menuOptionsHandler={this.getParticipantMenuCallBacks()}
-                                        onSelectionChanged={(identifier, isChecked) => this.remoteParticipantSelectionChanged(identifier, isChecked)}
-                                        />
-                                )
-                            }
-                        </ul>
-                    </div>
-
                 }
             </div>
         );

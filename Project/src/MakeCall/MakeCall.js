@@ -25,6 +25,14 @@ export default class MakeCall extends React.Component {
         this.destinationUserIds = null;
         this.destinationPhoneIds = null;
         this.destinationGroup = null;
+        this.userToUser = null;
+        this.xHeaders = [
+            { key: null, value: null},
+            { key: null, value: null},
+            { key: null, value: null},
+            { key: null, value: null},
+            { key: null, value: null},
+        ];
         this.meetingLink = null;
         this.meetingId = null;
         this.passcode = null;
@@ -50,7 +58,11 @@ export default class MakeCall extends React.Component {
             showMuteUnmuteSampleCode: false,
             showHoldUnholdCallSampleCode: false,
             showPreCallDiagnosticsSampleCode: false,
+            showCustomContextSampleCode: false,
             showPreCallDiagnostcisResults: false,
+            showCustomContext: false,
+            xHeadersCount: 1,
+            xHeadersMaxCount: 5,
             isPreCallDiagnosticsCallInProgress: false,
             selectedCameraDeviceId: null,
             selectedSpeakerDeviceId: null,
@@ -117,7 +129,7 @@ export default class MakeCall extends React.Component {
                 setLogLevel('verbose');
 
                 const proxyConfiguration = userDetails.proxy.useProxy ? { url: userDetails.proxy.url } : undefined;
-                const turnConfiguration = userDetails.customTurn.useCustomTurn && !userDetails.customTurn.isLoading ? userDetails.customTurn.turn : undefined;
+                const turnConfiguration = userDetails.customTurn.useCustomTurn ? userDetails.customTurn.turn : undefined;
                 this.callClient = new CallClient({
                     diagnostics: {
                         appName: 'azure-communication-services',
@@ -150,21 +162,41 @@ export default class MakeCall extends React.Component {
                         this.setState({ call: call });
 
                         const diagnosticChangedListener = (diagnosticInfo) => {
-                            const rmsg = `UFD Diagnostic changed:
-                            Diagnostic: ${diagnosticInfo.diagnostic}
-                            Value: ${diagnosticInfo.value}
-                            Value type: ${diagnosticInfo.valueType}`;
-                            if (this.state.ufdMessages.length > 0) {
-                                this.setState({ ufdMessages: [...this.state.ufdMessages, rmsg] });
-                            } else {
-                                this.setState({ ufdMessages: [rmsg] });
-                            }
+                                const rmsg = `UFD Diagnostic changed:
+                                Diagnostic: ${diagnosticInfo.diagnostic}
+                                Value: ${diagnosticInfo.value}
+                                Value type: ${diagnosticInfo.valueType}`;
+                                if (this.state.ufdMessages.length > 0) {
+                                    // limit speakingWhileMicrophoneIsMuted diagnostic until another diagnostic is received
+                                    if (diagnosticInfo.diagnostic === 'speakingWhileMicrophoneIsMuted' && this.state.ufdMessages[0].includes('speakingWhileMicrophoneIsMuted')) {
+                                        console.info(rmsg);
+                                        return;
+                                    }
+                                    this.setState({ ufdMessages: [rmsg, ...this.state.ufdMessages] });
+                                } else {
+                                    this.setState({ ufdMessages: [rmsg] });
+                                }
+                        };
 
-
+                        const remoteDiagnosticChangedListener = (diagnosticArgs) => {
+                            diagnosticArgs.diagnostics.forEach(diagnosticInfo => {
+                                const rmsg = `UFD Diagnostic changed:
+                                Diagnostic: ${diagnosticInfo.diagnostic}
+                                Value: ${diagnosticInfo.value}
+                                Value type: ${diagnosticInfo.valueType}
+                                Participant Id: ${diagnosticInfo.participantId}
+                                Participant name: ${diagnosticInfo.remoteParticipant?.displayName}`;
+                                if (this.state.ufdMessages.length > 0) {
+                                    this.setState({ ufdMessages: [rmsg, ...this.state.ufdMessages] });
+                                } else {
+                                    this.setState({ ufdMessages: [rmsg] });
+                                }
+                            });
                         };
 
                         call.feature(Features.UserFacingDiagnostics).media.on('diagnosticChanged', diagnosticChangedListener);
                         call.feature(Features.UserFacingDiagnostics).network.on('diagnosticChanged', diagnosticChangedListener);
+                        call.feature(Features.UserFacingDiagnostics).remote?.on('diagnosticChanged', remoteDiagnosticChangedListener);
                     });
 
                     e.removed.forEach(call => {
@@ -245,6 +277,23 @@ export default class MakeCall extends React.Component {
             if (identitiesToCall.length > 1) {
                 if (this.callAgent.kind === CallAgentKind.TeamsCallAgent && this.threadId?.value !== '') {
                     callOptions.threadId = this.threadId.value;
+                }
+            }
+
+            if (this.state.showCustomContext) {
+                if (this.userToUser.value) {
+                    callOptions.customContext = callOptions.customContext || {};
+                    callOptions.customContext.userToUser = this.userToUser.value;
+                }
+                
+                const xHeaders = this.xHeaders
+                    .filter(header => !!header.key.value && !!header.value.value)
+                    .map(header => {
+                        return { key: header.key.value, value: header.value.value };
+                    });
+                if (xHeaders.length > 0) {
+                    callOptions.customContext = callOptions.customContext || {};
+                    callOptions.customContext.xHeaders = xHeaders;
                 }
             }
 
@@ -389,7 +438,8 @@ export default class MakeCall extends React.Component {
 
         try {
             const speakers = await this.deviceManager.getSpeakers();
-            const speakerDevice = speakers[0];
+            // Select the default or first speaker device found.
+            const speakerDevice = speakers.find(speaker => speaker.isSystemDefault) ?? speakers[0];
             if (!speakerDevice || speakerDevice.id === 'speaker:') {
                 throw new Error('No speaker devices found.');
             } else if (speakerDevice) {
@@ -405,7 +455,8 @@ export default class MakeCall extends React.Component {
 
         try {
             const microphones = await this.deviceManager.getMicrophones();
-            const microphoneDevice = microphones[0];
+            // Select the default or first microphone device found.
+            const microphoneDevice = microphones.find(mic => mic.isSystemDefault) ?? microphones[0];
             if (!microphoneDevice || microphoneDevice.id === 'microphone:') {
                 throw new Error('No microphone devices found.');
             } else {
@@ -465,6 +516,13 @@ export default class MakeCall extends React.Component {
             throw new Error("Can't run Pre Call Diagnostics test. Please try again...");
         }
     }
+
+    xHeadersChanged = () => {
+        const xHeadersFilled = this.xHeaders.filter(header => !!header.key.value && !!header.value.value).length;
+        if (xHeadersFilled === this.state.xHeadersCount && this.state.xHeadersCount < this.state.xHeadersMaxCount) {
+            this.setState({ xHeadersCount: this.state.xHeadersCount + 1 });
+        }
+    };
 
     render() {
         const callSampleCode = `
@@ -783,6 +841,46 @@ this.deviceManager.on('selectedMicrophoneChanged', () => { console.log(this.devi
 this.deviceManager.on('selectedSpeakerChanged', () => { console.log(this.deviceManager.selectedSpeaker) });
         `;
 
+        const customContextSampleCode = `
+/******************************/
+/*       Placing a call       */
+/******************************/
+// Set up customContext
+this.callOptions.customContext = {
+    userToUser: <USER_TO_USER_VALUE>,
+    xHeaders: [
+        { key: <CUSTOM_HEADER_KEY>, value: <CUSTOM_HEADER_VALUE> },
+    ]
+};
+
+// To place a 1:1 call to another ACS user
+const userId = { communicationUserId: 'ACS_USER_ID');
+this.currentCall = this.callAgent.startCall([userId], this.callOptions);
+
+// Place a 1:1 call to an ACS phone number. PSTN calling is currently in private preview.
+// When making PSTN calls, your Alternate Caller Id must be specified in the call options.
+const phoneNumber = { phoneNumber: <ACS_PHONE_NUMBER>);
+this.callOptions.alternateCallerId = { phoneNumber: <ALTERNATE_CALLER_ID>}
+this.currentCall = this.callAgent.startCall([phoneNumber], this.callOptions);
+
+// Place a 1:N call. Specify a multiple destinations
+this.currentCall = this.callAgent.startCall([userId1, phoneNumber], this.callOptions);
+
+/******************************/
+/*      Receiving a call      */
+/******************************/
+this.callAgent.on('incomingCall', async (args) => {
+    // receiving customContext
+    const customContext = args.incomingCall.customContext;
+    
+    // accept the incoming call
+    const call = await args.incomingCall.accept();
+
+    // or reject the incoming call
+    args.incomingCall.reject();
+});
+        `;
+
         // TODO: Create section component. Couldnt use the ExampleCard compoenent from uifabric because it is buggy,
         //       when toggling their show/hide code functionality, videos dissapear from DOM.
 
@@ -912,6 +1010,45 @@ this.deviceManager.on('selectedSpeakerChanged', () => { console.log(this.deviceM
                                             disabled={this.state.call || !this.state.loggedIn}
                                             onClick={() => this.placeCall(true)}>
                                         </PrimaryButton>
+                                        <PrimaryButton 
+                                            className="primary-button"
+                                            iconProps={{iconName: 'Settings', style: {verticalAlign: 'middle', fontSize: 'large'}}}
+                                            text={this.state.showCustomContext ? 'Remove context' : 'Custom context'}
+                                            disabled={this.state.call || !this.state.loggedIn}
+                                            onClick={() => this.setState({showCustomContext: !this.state.showCustomContext})}>
+                                        </PrimaryButton>
+                                        <div className="ms-Grid-row" 
+                                             style={{display: this.state.showCustomContext ? 'block' : 'none'}}>
+                                            <div className="md-Grid-col ml-2 mt-0 ms-sm11 ms-md11 ms-lg9 ms-xl9 ms-xxl11">
+                                                <TextField
+                                                    className="mt-0"
+                                                    disabled={this.state.call || !this.state.loggedIn}
+                                                    label="Add user to user value"
+                                                    placeholder=""
+                                                    componentRef={(val) => this.userToUser = val} />
+                                            </div>
+                                        </div>
+                                        {[...Array(this.state.xHeadersMaxCount)].map((_, i) =>
+                                            <div className="ms-Grid-row" key={i}
+                                                 style={{display: i < this.state.xHeadersCount && this.state.showCustomContext ? 'block' : 'none'}}>
+                                                <div className="md-Grid-col inline-flex ml-2 mt-0 ms-sm11 ms-md11 ms-lg9 ms-xl9 ms-xxl11">
+                                                    <TextField
+                                                        className="mt-0 ms-sm6 ms-md6 ms-lg6 ms-xl6 ms-xxl6"
+                                                        disabled={this.state.call || !this.state.loggedIn}
+                                                        label="Custom header key"
+                                                        placeholder=""
+                                                        onChange={() => this.xHeadersChanged()}
+                                                        componentRef={(val) => this.xHeaders[i].key = val} />
+                                                    <TextField
+                                                        className="mt-0 ml-2 ms-sm6 ms-md6 ms-lg6 ms-xl6 ms-xxl6"
+                                                        disabled={this.state.call || !this.state.loggedIn}
+                                                        label="Custom header value"
+                                                        placeholder=""
+                                                        onChange={() => this.xHeadersChanged()}
+                                                        componentRef={(val) => this.xHeaders[i].value = val} />
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                     <div className="ms-Grid-col ms-sm12 ms-md12 ms-lg12 ms-xl1 ms-xxl1">
                                     </div>
@@ -1351,6 +1488,36 @@ this.deviceManager.on('selectedSpeakerChanged', () => { console.log(this.deviceM
                         <div>
                             From your current call, click on the <Icon className="icon-text-xlarge" iconName="Settings" /> icon to open up the settings panel.
                             The DeviceManager is used to select the devices (camera, microphone, and speakers) to use across the call stack and to preview your camera.
+                        </div>
+                    </div>
+                </div>
+                <div className="card">
+                    <div className="ms-Grid">
+                        <div className="ms-Grid-row">
+                            <h2 className="ms-Grid-col ms-lg6 ms-sm6 mb-4">Custom Context</h2>
+                            <div className="ms-Grid-col ms-lg6 ms-sm6 text-right">
+                                <PrimaryButton
+                                    className="secondary-button"
+                                    iconProps={{ iconName: 'Settings', style: { verticalAlign: 'middle', fontSize: 'large' } }}
+                                    text={`${this.state.showCustomContextSampleCode ? 'Hide' : 'Show'} code`}
+                                    onClick={() => this.setState({ showCustomContextSampleCode: !this.state.showCustomContextSampleCode })}>
+                                </PrimaryButton>
+                            </div>
+                        </div>
+                        {
+                            this.state.showCustomContextSampleCode &&
+                            <pre>
+                                <code style={{ color: '#b3b0ad' }}>
+                                    {customContextSampleCode}
+                                </code>
+                            </pre>
+                        }
+                        <h3>
+                            Try it out.
+                        </h3>
+                        <div>
+                            Before starting the call, click on the <Icon className="icon-text-xlarge" iconName="Settings" /> Custom context button to open up the settings panel.
+                            Then you can set your user to user value and up to five custom headers.
                         </div>
                     </div>
                 </div>

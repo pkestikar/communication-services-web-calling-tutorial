@@ -23,6 +23,8 @@ export default class RemoteParticipantCard extends React.Component {
 
         this.spotlightFeature = this.call.feature(Features.Spotlight);
         this.raiseHandFeature = this.call.feature(Features.RaiseHand);
+        this.capabilitiesFeature = props.capabilitiesFeature;
+        this.capabilities = this.capabilitiesFeature.capabilities;
         this.menuOptionsHandler= props.menuOptionsHandler;
         this.state = {
             isSpeaking: this.remoteParticipant.isSpeaking,
@@ -32,6 +34,8 @@ export default class RemoteParticipantCard extends React.Component {
             participantIds: this.remoteParticipant.endpointDetails.map((e) => { return e.participantId }),
             isHandRaised: utils.isParticipantHandRaised(this.remoteParticipant.identifier, this.raiseHandFeature.getRaisedHands()),
             isSpotlighted: utils.isParticipantHandRaised(this.remoteParticipant.identifier, this.spotlightFeature.getSpotlightedParticipants()),
+            canManageLobby: this.capabilities.manageLobby?.isPresent || this.capabilities.manageLobby?.reason === 'FeatureNotSupported',
+            canMuteOthers: this.capabilities.muteOthers?.isPresent || this.capabilities.muteOthers?.reason === 'FeatureNotSupported',
         };
     }
 
@@ -81,6 +85,21 @@ export default class RemoteParticipantCard extends React.Component {
         }
         this.raiseHandFeature.on("loweredHandEvent", isRaiseHandChangedHandler);
         this.raiseHandFeature.on("raisedHandEvent", isRaiseHandChangedHandler);
+        this.capabilitiesFeature.on('capabilitiesChanged', (capabilitiesChangeInfo) => {
+            for (const [key, value] of Object.entries(capabilitiesChangeInfo.newValue)) {
+                if(key === 'manageLobby' && value.reason != 'FeatureNotSupported') {
+                    (value.isPresent) ? this.setState({ canManageLobby: true }) : this.setState({ canManageLobby: false });
+                    let lobbyActions = document.getElementById('lobbyAction');
+                    if(this.state.canManageLobby === false){
+                        lobbyActions.hidden = true;
+                    }
+                    else{
+                        lobbyActions.hidden = false;
+                    }
+                    continue;
+                }
+            }
+        });
     }
 
     handleRemoveParticipant(e, identifier) {
@@ -90,7 +109,11 @@ export default class RemoteParticipantCard extends React.Component {
 
     handleMuteParticipant(e, remoteParticipant) {
         e.preventDefault();
-        remoteParticipant.mute?.().catch((e) => console.error('Failed to mute specific participant.', e))
+        if (this.state.canMuteOthers) {
+            remoteParticipant.mute?.().catch((e) => console.error('Failed to mute specific participant.', e.message, e));
+        } else {
+            console.error('Soft mute of remote participants is not a supported capability for this participant.');
+        }
     }
 
     handleCheckboxChange(e) {
@@ -108,6 +131,10 @@ export default class RemoteParticipantCard extends React.Component {
                 this.menuOptionsHandler.startSpotlight(this.identifier, e)
         });
         return menuItems.filter(item => item != 0)
+    }
+
+    getSecondaryText() {
+        return `${this.state.state} | ${this.state.participantIds.toString()}`;
     }
 
     async handleRemoteRaiseHand() {
@@ -157,7 +184,7 @@ export default class RemoteParticipantCard extends React.Component {
                                     this.state.displayName :
                                     this.state.participantIds.toString()
                                 }
-                                secondaryText={this.state.state}
+                                secondaryText={this.getSecondaryText()}
                                 styles={{ primaryText: {color: '#edebe9'}, secondaryText: {color: '#edebe9'} }}/>
                         </div>
                     </div>
@@ -186,9 +213,9 @@ export default class RemoteParticipantCard extends React.Component {
                         <div className="inline-block">
                         {
                             this.state.state === "InLobby" ?
-                                <div className="text-right lobby-action">
-                                    <a href="#" onClick={e => this.admitParticipant(e)} className="float-right ml-3"> Admit Participant</a>
-                                    <a href="#" onClick={e => this.rejectParticipant(e)} className="float-right ml-3"> Reject Participant</a>
+                                <div className="text-right lobby-action" id="lobbyAction" hidden={this.state.canManageLobby === false}>
+                                    <a href="#" onClick={e => this.admitParticipant(e)} className="float-right ml-3 green-link"> Admit</a>
+                                    <a href="#" onClick={e => this.rejectParticipant(e)} className="float-right ml-3 red-link"> Reject</a>
                                 </div> :
                                 <div className="in-call-button inline-block"
                                     title={`Remove participant`}
