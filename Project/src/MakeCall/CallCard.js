@@ -43,6 +43,7 @@ export default class CallCard extends React.Component {
         this.dominantSpeakersFeature = this.call.feature(Features.DominantSpeakers);
         this.recordingFeature = this.call.feature(Features.Recording);
         this.transcriptionFeature = this.call.feature(Features.Transcription);
+        this.lobby = this.call.lobby;
         if (Features.Reaction) {
             this.meetingReaction = this.call.feature(Features.Reaction);
         }
@@ -100,7 +101,8 @@ export default class CallCard extends React.Component {
             reactionRows:[],
             pptLiveActive: false,
             isRecordingActive: false,
-            isTranscriptionActive: false
+            isTranscriptionActive: false,
+            lobbyParticipantsCount: this.lobby?.participants.length
         };
         this.selectedRemoteParticipants = new Set();
         this.dataChannelRef = React.createRef();
@@ -129,6 +131,7 @@ export default class CallCard extends React.Component {
         this.call.feature(Features.RaiseHand).off('loweredHandEvent', this.raiseHandChangedHandler);
         this.recordingFeature.off('isRecordingActiveChanged', this.isRecordingActiveChangedHandler);
         this.transcriptionFeature.off('isTranscriptionActiveChanged', this.isTranscriptionActiveChangedHandler);
+        this.lobby?.off('lobbyParticipantsUpdated', () => { });
         if (Features.Reaction) {
             this.call.feature(Features.Reaction).off('reaction', this.reactionChangeHandler);
         }
@@ -143,6 +146,10 @@ export default class CallCard extends React.Component {
             this.deviceManager.on('videoDevicesUpdated', async e => {
                 e.added.forEach(addedCameraDevice => {
                     const addedCameraDeviceOption = { key: addedCameraDevice.id, text: addedCameraDevice.name };
+                    // If there were no cameras in the system and then a camera is plugged in / enabled, select it for use.
+                    if (this.state.cameraDeviceOptions.length === 0 && !this.state.selectedCameraDeviceId) {
+                        this.setState({ selectedCameraDeviceId: addedCameraDevice.id });
+                    }
                     this.setState(prevState => ({
                         ...prevState,
                         cameraDeviceOptions: [...prevState.cameraDeviceOptions, addedCameraDeviceOption]
@@ -151,7 +158,9 @@ export default class CallCard extends React.Component {
 
                 e.removed.forEach(async removedCameraDevice => {
                     // If the selected camera is removed, select a new camera.
-                    // Note: When the selected camera is removed, the calling sdk automatically turns video off.
+                    // If there are no other cameras, then just set this.state.selectedCameraDeviceId to undefined.
+                    // When the selected camera is removed, the calling sdk automatically turns video off.
+                    // User needs to manually turn video on again.
                     this.setState(prevState => ({
                         ...prevState,
                         cameraDeviceOptions: prevState.cameraDeviceOptions.filter(option => { return option.key !== removedCameraDevice.id })
@@ -211,11 +220,6 @@ export default class CallCard extends React.Component {
                         this.callFinishConnectingResolve();
                     }
                 }
-                if (this.call.state === 'Incoming') {
-                    this.setState({ selectedCameraDeviceId: cameraDevices[0]?.id });
-                    this.setState({ selectedSpeakerDeviceId: speakerDevices[0]?.id });
-                    this.setState({ selectedMicrophoneDeviceId: microphoneDevices[0]?.id });
-                }
 
                 if (this.call.state !== 'Disconnected') {
                     this.setState({ callState: this.call.state });
@@ -264,7 +268,7 @@ export default class CallCard extends React.Component {
             });
 
             this.call.on('mutedByOthers', () => {
-                const messageBarText = 'You have been muted by someone else. Unmute to speak.';
+                const messageBarText = 'You have been muted by someone else';
                 this.setState(prevState => ({
                     ...prevState,
                     callMessage: `${prevState.callMessage ? prevState.callMessage + `\n` : ``} ${messageBarText}.`
@@ -368,7 +372,10 @@ export default class CallCard extends React.Component {
                 }
                 this.state.allRemoteParticipantStreams.forEach(v => {
                     let renderer = v.streamRendererComponentRef.current;
-                    renderer?.updateReceiveStats(stats[v.stream.id]);
+                    const videoStats = stats[v.stream.id];
+                    const transportId = videoStats?.transportId;
+                    const transportStats = transportId && data?.transports?.length ? data.transports.find(item => item.id === transportId) : undefined;
+                    renderer?.updateReceiveStats(videoStats, transportStats);
                 });
                 if (this.state.logMediaStats) {
                     if (data.video.send.length > 0) {
@@ -459,6 +466,7 @@ export default class CallCard extends React.Component {
             this.pptLiveFeature?.on('isActiveChanged', this.pptLiveChangedHandler);
             this.recordingFeature.on('isRecordingActiveChanged', this.isRecordingActiveChangedHandler);
             this.transcriptionFeature.on('isTranscriptionActiveChanged', this.isTranscriptionActiveChangedHandler);
+            this.lobby?.on('lobbyParticipantsUpdated', this.lobbyParticipantsUpdatedHandler);
         }
     }
 
@@ -527,6 +535,21 @@ export default class CallCard extends React.Component {
     isTranscriptionActiveChangedHandler = (event) => {
         this.setState({ isTranscriptionActive: this.transcriptionFeature.isTranscriptionActive })
     }
+
+    lobbyParticipantsUpdatedHandler = (event) => {
+        console.log(`lobbyParticipantsUpdated, added=${event.added}, removed=${event.removed}`);
+        this.state.lobbyParticipantsCount = this.lobby?.participants.length;
+        if(event.added.length > 0) {
+            event.added.forEach(participant => {
+                console.log('lobbyParticipantAdded', participant);
+            });
+        }
+        if(event.removed.length > 0) {
+            event.removed.forEach(participant => {
+                console.log('lobbyParticipantRemoved', participant);
+            });
+        }
+    };
 
     raiseHandChangedHandler = (event) => {
         this.setState({isHandRaised: utils.isParticipantHandRaised(this.identifier, this.raiseHandFeature.getRaisedHands())})
@@ -1165,7 +1188,10 @@ export default class CallCard extends React.Component {
                                 }
                             </div>
                             <div>
-                                <Lobby call={this.call} capabilitiesFeature={this.capabilitiesFeature}/>
+                                {
+                                    (this.state.lobbyParticipantsCount > 0) &&
+                                    <Lobby call={this.call} capabilitiesFeature={this.capabilitiesFeature} lobbyParticipantsCount={this.state.lobbyParticipantsCount} />
+                                }
                             </div>
                             {
                                 this.state.dominantSpeakerMode &&
