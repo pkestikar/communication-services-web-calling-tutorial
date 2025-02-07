@@ -20,6 +20,7 @@ import CallCaption from "./CallCaption";
 import Lobby from "./Lobby";
 import { ParticipantMenuOptions } from './ParticipantMenuOptions';
 import MediaConstraint from './MediaConstraint';
+import RealTimeTextCard from "./RealTimeTextCard";
 
 export default class CallCard extends React.Component {
     constructor(props) {
@@ -40,6 +41,9 @@ export default class CallCard extends React.Component {
         this.raiseHandFeature = this.call.feature(Features.RaiseHand);
         this.capabilitiesFeature = this.call.feature(Features.Capabilities);
         this.capabilities = this.capabilitiesFeature.capabilities;
+        if (Features.RealTimeText) {
+            this.realTimeTextFeature = this.call.feature(Features.RealTimeText);
+        }
         this.dominantSpeakersFeature = this.call.feature(Features.DominantSpeakers);
         this.recordingFeature = this.call.feature(Features.Recording);
         this.transcriptionFeature = this.call.feature(Features.Transcription);
@@ -50,6 +54,18 @@ export default class CallCard extends React.Component {
         if (Features.PPTLive) {
             this.pptLiveFeature = this.call.feature(Features.PPTLive);
             this.pptLiveHtml = React.createRef();
+        }
+        let meetingMediaAccess = undefined;
+        let remoteParticipantsMediaAccess = undefined;
+        let mediaAccessMap = undefined;
+        if (Features.MediaAccess) {
+            this.mediaAccessCallFeature = this.call.feature(Features.MediaAccess);
+            meetingMediaAccess = this.call.feature(Features.MediaAccess).getMeetingMediaAccess();
+            remoteParticipantsMediaAccess = this.call.feature(Features.MediaAccess).getAllOthersMediaAccess();
+            mediaAccessMap = new Map();
+            remoteParticipantsMediaAccess.forEach((mediaAccess) => {
+                mediaAccessMap.set(mediaAccess.participant.rawId, mediaAccess);
+            });
         }
         this.isTeamsUser = props.isTeamsUser;
         this.dummyStreamTimeout = undefined;
@@ -67,6 +83,8 @@ export default class CallCard extends React.Component {
             canSpotlight: this.capabilities.spotlightParticipant?.isPresent || this.capabilities.spotlightParticipant?.reason === 'FeatureNotSupported',
             canMuteOthers: this.capabilities.muteOthers?.isPresent || this.capabilities.muteOthers?.reason === 'FeatureNotSupported',
             canReact: this.capabilities.useReactions?.isPresent || this.capabilities.useReactions?.reason === 'FeatureNotSupported',
+            canForbidOthersAudio: this.capabilities.forbidOthersAudio?.isPresent || this.capabilities.forbidOthersAudio?.reason === 'FeatureNotSupported',
+            canForbidOthersVideo: this.capabilities.forbidOthersVideo?.isPresent || this.capabilities.forbidOthersVideo?.reason === 'FeatureNotSupported',
             videoOn: this.call.isLocalVideoStarted,
             screenSharingOn: this.call.isScreenSharingOn,
             micMuted: this.call.isMuted,
@@ -86,6 +104,9 @@ export default class CallCard extends React.Component {
             callMessage: undefined,
             dominantSpeakerMode: false,
             captionOn: false,
+            realTimeTextOn: false,
+            firstRealTimeTextReceivedorSent: false,
+            showCanNotHideorCloseRealTimeTextBanner: false,
             dominantRemoteParticipant: undefined,
             logMediaStats: false,
             sentResolution: '',
@@ -102,13 +123,24 @@ export default class CallCard extends React.Component {
             pptLiveActive: false,
             isRecordingActive: false,
             isTranscriptionActive: false,
-            lobbyParticipantsCount: this.lobby?.participants.length
+            lobbyParticipantsCount: this.lobby?.participants.length,
+            mediaAccessMap,
+            meetingMediaAccess: {
+                isAudioPermitted: meetingMediaAccess?.isAudioPermitted,
+                isVideoPermitted: meetingMediaAccess?.isVideoPermitted,
+            },
+            isPinningActive: false,
+            showPin2VideosList: false,
         };
         this.selectedRemoteParticipants = new Set();
         this.dataChannelRef = React.createRef();
         this.localVideoPreviewRef = React.createRef();
         this.localScreenSharingPreviewRef = React.createRef();
         this.isSetCallConstraints = this.call.setConstraints !== undefined;
+    }
+
+    setFirstRealTimeTextReceivedorSent = (state) => {
+        this.setState({ firstRealTimeTextReceivedorSent: state });
     }
 
     componentWillUnmount() {
@@ -139,7 +171,11 @@ export default class CallCard extends React.Component {
             this.call.feature(Features.PPTLive).off('isActiveChanged', this.pptLiveChangedHandler);
         }
         this.dominantSpeakersFeature.off('dominantSpeakersChanged', this.dominantSpeakersChanged);
-            }
+        if (Features.mediaAccess) {
+            this.mediaAccessCallFeature.off('mediaAccessChanged', this.mediaAccessChangedHandler);
+            this.mediaAccessCallFeature.off('meetingMediaAccessChanged', this.meetingMediaAccessChangedHandler);
+        }
+    }
 
     componentDidMount() {
         if (this.call) {
@@ -228,10 +264,14 @@ export default class CallCard extends React.Component {
                 if (this.call.state === 'LocalHold' || this.call.state === 'RemoteHold') {
                     this.setState({ canRaiseHands: false });
                     this.setState({ canSpotlight: false });
+                    this.setState({ canForbidOthersAudio: false });
+                    this.setState({ canForbidOthersVideo: false });
                 }
                 if (this.call.state === 'Connected') {
                     this.setState({ canRaiseHands:  this.capabilities.raiseHand?.isPresent || this.capabilities.raiseHand?.reason === 'FeatureNotSupported' });
                     this.setState({ canSpotlight: this.capabilities.spotlightParticipant?.isPresent || this.capabilities.spotlightParticipant?.reason === 'FeatureNotSupported' });
+                    this.setState({ canForbidOthersAudio: this.capabilities.forbidOthersAudio?.isPresent || this.capabilities.forbidOthersAudio?.reason === 'FeatureNotSupported' });
+                    this.setState({ canForbidOthersVideo: this.capabilities.forbidOthersVideo?.isPresent || this.capabilities.forbidOthersVideo?.reason === 'FeatureNotSupported' });
                 }
             }
             callStateChanged();
@@ -468,6 +508,11 @@ export default class CallCard extends React.Component {
             this.recordingFeature.on('isRecordingActiveChanged', this.isRecordingActiveChangedHandler);
             this.transcriptionFeature.on('isTranscriptionActiveChanged', this.isTranscriptionActiveChangedHandler);
             this.lobby?.on('lobbyParticipantsUpdated', this.lobbyParticipantsUpdatedHandler);
+            this.realTimeTextFeature?.on('realTimeTextReceived', this.realTimeTextReceivedHandler);
+            if (Features.MediaAccess) {
+                this.mediaAccessCallFeature.on('mediaAccessChanged', this.mediaAccessChangedHandler);
+                this.mediaAccessCallFeature.on('meetingMediaAccessChanged', this.meetingMediaAccessChangedHandler);
+            }
         }
     }
 
@@ -527,6 +572,24 @@ export default class CallCard extends React.Component {
     spotlightStateChangedHandler = (event) => {
         this.setState({isSpotlighted: utils.isParticipantSpotlighted(
             this.identifier, this.spotlightFeature.getSpotlightedParticipants())})
+    }
+
+    mediaAccessChangedHandler = (event) => {
+        const mediaAccessMap = new Map();
+        event.mediaAccesses.forEach((mediaAccess) => {
+            mediaAccessMap.set(mediaAccess.participant.rawId, mediaAccess);
+        });    
+      
+        this.setState({mediaAccessMap});
+    }
+
+    meetingMediaAccessChangedHandler = (event) => {
+        if (event.meetingMediaAccess) {
+            this.setState({meetingMediaAccess: {
+                isAudioPermitted: event.meetingMediaAccess.isAudioPermitted,
+                isVideoPermitted: event.meetingMediaAccess.isVideoPermitted,
+            }});
+        }
     }
 
     isRecordingActiveChangedHandler = (event) => {
@@ -618,11 +681,11 @@ export default class CallCard extends React.Component {
     capabilitiesChangedHandler = (capabilitiesChangeInfo) => {
         for (const [key, value] of Object.entries(capabilitiesChangeInfo.newValue)) {
             if(key === 'turnVideoOn' && value.reason != 'FeatureNotSupported') {
-                (value.isPresent) ? this.setState({ canOnVideo: true }) : this.setState({ canOnVideo: false });
+                (value.isPresent) ? this.setState(prevState => ({ ...prevState, canOnVideo: true, callMessage: prevState.callMessage?.replace('Your camera has been disabled.','') })) : this.setState({ canOnVideo: false, callMessage: 'Your camera has been disabled.'  });
                 continue;
             }
             if(key === 'unmuteMic' && value.reason != 'FeatureNotSupported') {
-                (value.isPresent) ? this.setState({ canUnMuteMic: true }) : this.setState({ canUnMuteMic: false });
+                (value.isPresent) ? this.setState(prevState => ({...prevState, canUnMuteMic: true, callMessage: prevState.callMessage?.replace('Your mic has been disabled.','')  })) : this.setState({ canUnMuteMic: false, callMessage: 'Your mic has been disabled.' });
                 continue;
             }
             if(key === 'shareScreen' && value.reason != 'FeatureNotSupported') {
@@ -645,8 +708,72 @@ export default class CallCard extends React.Component {
                 (value.isPresent) ? this.setState({ canReact: true }) : this.setState({ canReact: false });
                 continue;
             }
+            if(key === 'forbidOthersAudio' && value.reason != 'FeatureNotSupported') {
+                (value.isPresent) ? this.setState({ canForbidOthersAudio: true }) : this.setState({ canForbidOthersAudio: false });
+                continue;
+            }
+            if(key === 'forbidOthersVideo' && value.reason != 'FeatureNotSupported') {
+                (value.isPresent) ? this.setState({ canForbidOthersVideo: true }) : this.setState({ canForbidOthersVideo: false });
+                continue;
+            }
         }
         this.capabilities =  this.capabilitiesFeature.capabilities;
+    }
+
+    realTimeTextReceivedHandler = (rttData) => {
+        this.setState({ realTimeTextOn: true });
+        if (!this.state.firstRealTimeTextReceivedorSent) {
+            this.setState({ firstRealTimeTextReceivedorSent: true });
+        }
+        if (rttData) {
+    
+            let mri = '';
+            let displayName = '';
+            switch (rttData.sender.identifier.kind) {
+                case 'communicationUser': { mri = rttData.sender.identifier.communicationUserId; displayName = rttData.sender.displayName; break; }
+                case 'microsoftTeamsUser': { mri = rttData.sender.identifier.microsoftTeamsUserId; displayName = rttData.sender.displayName; break; }
+                case 'phoneNumber': { mri = rttData.sender.identifier.phoneNumber;  displayName = rttData.sender.displayName; break; }
+            }
+
+            let rttAreaContainer = document.getElementById('rttArea');
+
+            const newClassName = `prefix${mri.replace(/:/g, '').replace(/-/g, '').replace(/\+/g, '')}`;
+            const rttText = `${(rttData.receivedTimestamp).toUTCString()} ${displayName ?? mri} isTyping: `;
+
+            let foundRTTContainer = rttAreaContainer.querySelector(`.${newClassName}[isNotFinal='true']`);
+
+            if (!foundRTTContainer) {
+                if (rttData.text.trim() === '') {
+                    return
+                }
+                let rttContainer = document.createElement('div');
+                rttContainer.setAttribute('isNotFinal', 'true');
+                rttContainer.style['borderBottom'] = '1px solid';
+                rttContainer.style['whiteSpace'] = 'pre-line';
+                rttContainer.textContent = rttText + rttData.text;
+                rttContainer.classList.add(newClassName);
+
+                rttAreaContainer.appendChild(rttContainer);
+
+                setTimeout(() => {
+                    rttAreaContainer.removeChild(rttContainer);
+                }, 40000);
+            } else {
+                if (rttData.text.trim() === '') {
+                    rttAreaContainer.removeChild(foundRTTContainer);
+                }
+                if (rttData.resultType === 'Final') {
+                    foundRTTContainer.setAttribute('isNotFinal', 'false');
+                    foundRTTContainer.textContent = foundRTTContainer.textContent.replace(' isTyping', '');
+                    if (rttData.isLocal) {
+                        let rttTextField = document.getElementById('rttTextField');
+                        rttTextField.value = null;
+                    }
+                } else {
+                    foundRTTContainer.textContent = rttText + rttData.text;
+                }
+            }
+        }
     }
 
     dominantSpeakersChanged = () => {
@@ -1065,6 +1192,62 @@ export default class CallCard extends React.Component {
                 } catch(e) {
                     console.error(e);
                 }
+            },
+            forbidAudio: async (identifier) => {
+                try {
+                    await this.mediaAccessCallFeature.forbidAudio([identifier]);
+                } catch(e) {
+                    console.error(e);
+                }
+            },
+            permitAudio: async (identifier) => {
+                try {
+                    await this.mediaAccessCallFeature.permitAudio([identifier]);
+                } catch(e) {
+                    console.error(e);
+                }
+            },
+            forbidVideo: async (identifier) => {
+                try {
+                    await this.mediaAccessCallFeature.forbidVideo([identifier]);
+                } catch(e) {
+                    console.error(e);
+                }
+            },
+            permitVideo: async (identifier) => {
+                try {
+                    await this.mediaAccessCallFeature.permitVideo([identifier]);
+                } catch(e) {
+                    console.error(e);
+                }
+            },
+            forbidOthersAudio: async () => {
+                try {
+                    await this.mediaAccessCallFeature.forbidOthersAudio();
+                } catch(e) {
+                    console.error(e);
+                }
+            },
+            permitOthersAudio: async () => {
+                try {
+                    await this.mediaAccessCallFeature.permitOthersAudio();
+                } catch(e) {
+                    console.error(e);
+                }
+            },
+            forbidOthersVideo: async () => {
+                try {
+                    await this.mediaAccessCallFeature.forbidOthersVideo();
+                } catch(e) {
+                    console.error(e);
+                }
+            },
+            permitOthersVideo: async () => {
+                try {
+                    await this.mediaAccessCallFeature.permitOthersVideo();
+                } catch(e) {
+                    console.error(e);
+                }
             }
         }
     }
@@ -1146,6 +1329,43 @@ export default class CallCard extends React.Component {
             onClick: (e) => menuCallBacks.consentToBeingRecorded(e)
         });
 
+        
+        if (this.state.canForbidOthersAudio && this.state.meetingMediaAccess.isAudioPermitted){
+            menuItems.push({
+                key: 'Disable mic for all attendees',
+                iconProps: { iconName: 'Focus'},
+                text: 'Disable mic for all attendees',
+                onClick: () => menuCallBacks.forbidOthersAudio()
+            });
+        }
+
+        if (this.state.canForbidOthersAudio && !this.state.meetingMediaAccess.isAudioPermitted){
+            menuItems.push({
+                key: 'Enable mic for all attendees',
+                iconProps: { iconName: 'Focus'},
+                text: 'Enable mic for all attendees',
+                onClick: () => menuCallBacks.permitOthersAudio()
+            });
+        }
+
+        if (this.state.canForbidOthersVideo && this.state.meetingMediaAccess.isVideoPermitted){
+            menuItems.push({
+                key: 'Disable camera for all attendees',
+                iconProps: { iconName: 'Focus'},
+                text: 'Disable camera for all attendees',
+                onClick: () => menuCallBacks.forbidOthersVideo()
+            });
+        }
+
+        if (this.state.canForbidOthersVideo && !this.state.meetingMediaAccess.isVideoPermitted){
+            menuItems.push({
+                key: 'Enable camera for all attendees',
+                iconProps: { iconName: 'Focus'},
+                text: 'Enable camera for all attendees',
+                onClick: () => menuCallBacks.permitOthersVideo()
+            });
+        }
+
         return menuItems.filter(item => item != 0)
     }
 
@@ -1169,9 +1389,35 @@ export default class CallCard extends React.Component {
         this.call.setConstraints(constraints);
     }
 
+    handleVideoPin = (streamTuple, e) => {
+        // e.preventDefault();
+        const checked = e.target.checked;
+        const allRemoteParticipantStreams = this.state.allRemoteParticipantStreams;
+        // If there is already 2 streams pinned and the user is trying to pin another stream, return
+        if (allRemoteParticipantStreams.filter(streamTuple => streamTuple.isPinned).length >= 2 && checked) {
+            return;
+        }
+
+        allRemoteParticipantStreams.forEach(v => {
+            if (streamTuple === v) {
+                v.isPinned = checked;
+            } else {
+                v.isPinned = !!v.isPinned;
+            }
+        });
+
+        this.setState({
+            allRemoteParticipantStreams: allRemoteParticipantStreams,
+            isPinningActive: allRemoteParticipantStreams.some(v => v.isPinned)
+        }, () => {
+            this.updateListOfParticipantsToRender('Pinned videos changed');
+        });
+    }
+
     render() {
         const emojis = ['👍', '❤️', '😂', '👏', '😲'];
         const streamCount = this.state.allRemoteParticipantStreams.length;
+        const mediaAccessMap = this.state.mediaAccessMap || new Map();
         return (
             <div className="ms-Grid mt-2">
                 <div className="ms-Grid-row">
@@ -1214,7 +1460,7 @@ export default class CallCard extends React.Component {
                 <div className="ms-Grid-row">
                     {
                         this.state.callState === 'Connected' && this.state.isShowParticipants &&
-                        <div className="ms-Grid-col ms-lg4">
+                        <div className="ms-Grid-col ms-lg12">
                             <div>
                                 {   this.state.showAddParticipantPanel &&
                                     <AddParticipantPopover call={this.call} />
@@ -1237,65 +1483,66 @@ export default class CallCard extends React.Component {
                                 <p>No other participants currently in the call</p>
                             }
                             <ul className="p-0 m-0">
-                                {
-                                    this.state.remoteParticipants.map(remoteParticipant =>
-                                        <RemoteParticipantCard
+                                {this.state.remoteParticipants.map(remoteParticipant => {
+                                        const participantMediaAccess = mediaAccessMap?.get(remoteParticipant.identifier.rawId);
+                                        return ( <RemoteParticipantCard
                                             key={`${utils.getIdentifierText(remoteParticipant.identifier)}`}
                                             remoteParticipant={remoteParticipant}
                                             call={this.call}
                                             menuOptionsHandler={this.getParticipantMenuCallBacks()}
                                             onSelectionChanged={(identifier, isChecked) => this.remoteParticipantSelectionChanged(identifier, isChecked)}
                                             capabilitiesFeature={this.capabilitiesFeature}
-                                            />
-                                    )
-                                }
+                                            mediaAccess={participantMediaAccess}
+                                            />);
+                                })}
+                                
                             </ul>
                             
                         </div>
                     }
-                    <div className={this.state.isShowParticipants ? "ms-Grid-col ms-lg8" : undefined}>
-                        <div className="video-grid-row">
-                            {
-                                (this.state.callState === 'Connected' ||
-                                    this.state.callState === 'LocalHold' ||
-                                    this.state.callState === 'RemoteHold') &&
-                                this.state.allRemoteParticipantStreams.map(v =>
-                                    <StreamRenderer
-                                        key={`${utils.getIdentifierText(v.participant.identifier)}-${v.stream.mediaStreamType}-${v.stream.id}`}
-                                        ref={v.streamRendererComponentRef}
-                                        stream={v.stream}
-                                        remoteParticipant={v.participant}
-                                        dominantSpeakerMode={this.state.dominantSpeakerMode}
-                                        dominantRemoteParticipant={this.state.dominantRemoteParticipant}
-                                        call={this.call}
-                                        showMediaStats={this.state.logMediaStats}
-                                        streamCount={streamCount}
-                                    />
-                                )
-                            }
-                            {
-                                (
-                                    this.state.remoteScreenShareStream &&
-                                        <StreamRenderer
-                                            key={`${utils.getIdentifierText(this.state.remoteScreenShareStream.participant.identifier)}-${this.state.remoteScreenShareStream.stream.mediaStreamType}-${this.state.remoteScreenShareStream.stream.id}`}
-                                            ref={this.state.remoteScreenShareStream.streamRendererComponentRef}
-                                            stream={this.state.remoteScreenShareStream.stream}
-                                            remoteParticipant={this.state.remoteScreenShareStream.participant}
-                                            dominantSpeakerMode={this.state.dominantSpeakerMode}
-                                            dominantRemoteParticipant={this.state.dominantRemoteParticipant}
-                                            call={this.call}
-                                            showMediaStats={this.state.logMediaStats}
-                                            streamCount={streamCount}
-                                        />
-                                )
-                            }
-                        </div>
+                    <div>
+                        {
+                            this.state.remoteScreenShareStream &&
+                                <StreamRenderer
+                                    key={`${utils.getIdentifierText(this.state.remoteScreenShareStream.participant.identifier)}-${this.state.remoteScreenShareStream.stream.mediaStreamType}-${this.state.remoteScreenShareStream.stream.id}`}
+                                    ref={this.state.remoteScreenShareStream.streamRendererComponentRef}
+                                    stream={this.state.remoteScreenShareStream.stream}
+                                    remoteParticipant={this.state.remoteScreenShareStream.participant}
+                                    dominantSpeakerMode={this.state.dominantSpeakerMode}
+                                    dominantRemoteParticipant={this.state.dominantRemoteParticipant}
+                                    call={this.call}
+                                    showMediaStats={this.state.logMediaStats}
+                                    streamCount={streamCount}
+                                />
+                        }
+                    </div>
+                    <div className="video-grid-row">
+                        {
+                            (this.state.callState === 'Connected' ||
+                                this.state.callState === 'LocalHold' ||
+                                this.state.callState === 'RemoteHold') &&
+                            this.state.allRemoteParticipantStreams.map(v =>
+                                <StreamRenderer
+                                    key={`${utils.getIdentifierText(v.participant.identifier)}-${v.stream.mediaStreamType}-${v.stream.id}`}
+                                    ref={v.streamRendererComponentRef}
+                                    stream={v.stream}
+                                    isPinningActive={this.state.isPinningActive}
+                                    isPinned={v.isPinned}
+                                    remoteParticipant={v.participant}
+                                    dominantSpeakerMode={this.state.dominantSpeakerMode}
+                                    dominantRemoteParticipant={this.state.dominantRemoteParticipant}
+                                    call={this.call}
+                                    showMediaStats={this.state.logMediaStats}
+                                    streamCount={streamCount}
+                                />
+                            )
+                        }
                     </div>
                 </div>
                 <div className="ms-Grid-row">
-                    <div className="text-center">
+                    <div className="text-center mt-4">
                         <span className="in-call-button"
-                            title={`Turn your video ${this.state.videoOn ? 'off' : 'on'}`}
+                            title = {`${this.state.canOnVideo ? (this.state.videoOn ? 'Turn your video off' : 'Turn your video on') : 'Video is disabled'}`}
                             variant="secondary"
                             onClick={() => this.handleVideoOnOff()}>
                             {
@@ -1303,12 +1550,16 @@ export default class CallCard extends React.Component {
                                 <Icon iconName="Video" />
                             }
                             {
-                                (!this.state.canOnVideo || !this.state.videoOn) &&
+                                (this.state.canOnVideo && !this.state.videoOn) &&
+                                <Icon iconName="VideoOff2" />
+                            }
+                            {
+                                (!this.state.canOnVideo) &&
                                 <Icon iconName="VideoOff" />
                             }
                         </span>
                         <span className="in-call-button"
-                            title={`${this.state.micMuted ? 'Unmute' : 'Mute'} your microphone`}
+                            title={`${this.state.canUnMuteMic ? (this.state.micMuted ? 'Unmute your microphone' : 'Mute your microphone') : 'Microphone is disabled'}`}
                             variant="secondary"
                             onClick={() => this.handleMicOnOff()}>
                             {
@@ -1316,8 +1567,11 @@ export default class CallCard extends React.Component {
                                 <Icon iconName="Microphone" />
                             }
                             {
-                                (!this.state.canUnMuteMic || this.state.micMuted) &&
+                                (this.state.canUnMuteMic && this.state.micMuted) &&
                                 <Icon iconName="MicOff2" />
+                            }
+                            {
+                                !this.state.canUnMuteMic && <Icon iconName="MicOff" />
                             }
                         </span>
                         <span className="in-call-button"
@@ -1455,6 +1709,27 @@ export default class CallCard extends React.Component {
                                 <Icon iconName="TextBox" />
                             }
                         </span>
+                        { Features.RealTimeText &&
+                            <span className="in-call-button"
+                                title={`${this.state.realTimeTextOn ? 'Hide RealTimeText Card' : 'Show RealTimeText Card'}`}
+                                variant="secondary"
+                                hidden={this.state.callState !== 'Connected'}
+                                onClick={() => { 
+                                    if (!this.state.firstRealTimeTextReceivedorSent) {
+                                        this.setState((prevState) => ({ realTimeTextOn: !prevState.realTimeTextOn }))
+                                    } else {
+                                        this.setState((prevState) => ({ showCanNotHideorCloseRealTimeTextBanner: true}))
+                                    }}}>
+                                {
+                                    this.state.realTimeTextOn &&
+                                    <Icon iconName="Comment" />
+                                }
+                                {
+                                    !this.state.realTimeTextOn &&
+                                    <Icon iconName="Comment" />
+                                }
+                            </span>
+                        }
                         <span className="in-call-button"
                             title={`${this.state.showDataChannel ? 'Turn data channel off' : 'Turn data channel on'}`}
                             variant="secondary"
@@ -1500,7 +1775,15 @@ export default class CallCard extends React.Component {
                                 variant="secondary"
                                 onClick={() => this.handleRaiseHand()}>
                                 <Icon iconName="HandsFree"  className={this.state.isHandRaised ? "callFeatureEnabled" : ``}/>
-                            </span>                        
+                            </span>
+                        }
+                        {
+                            <span className="in-call-button"
+                                title={`Pin 2 videos`}
+                                variant="secondary"
+                                onClick={() =>  this.setState({showPin2VideosList: !this.state.showPin2VideosList})}>
+                                <Icon iconName="Pinned"/>
+                            </span>
                         }
                         <span className="in-call-button"
                             title='Like Reaction'
@@ -1742,6 +2025,38 @@ export default class CallCard extends React.Component {
                     </div>
                 }
                 {
+                    Features.RealTimeText && this.state.realTimeTextOn &&
+                    <div className="mt-5">
+                        <div className="ms-Grid-row">
+                            <h3>RealTimeText</h3>
+                        </div>
+                        <div className="md-grid-row">
+                            {
+                                this.state.realTimeTextOn &&
+                                this.state.firstRealTimeTextReceivedorSent &&
+                                this.state.showCanNotHideorCloseRealTimeTextBanner &&
+                                <MessageBar
+                                    messageBarType={MessageBarType.warn}
+                                    isMultiline={true}
+                                    onDismiss={() => { this.setState({ showCanNotHideorCloseRealTimeTextBanner: undefined }) }}
+                                    dismissButtonAriaLabel="Close">
+                                    <b>Note: RealTimeText can not be closed or hidden after you have sent or received a message.</b>
+                                </MessageBar>
+                            }
+                            {
+                                this.state.realTimeTextOn &&
+                                <RealTimeTextCard
+                                    call={this.call}
+                                    state={{
+                                        firstRealTimeTextReceivedorSent: this.state.firstRealTimeTextReceivedorSent,
+                                        setFirstRealTimeTextReceivedorSent: this.setFirstRealTimeTextReceivedorSent
+                                    }}
+                                />
+                            }
+                        </div>
+                    </div>
+                }
+                {
                     this.state.showDataChannel &&
                     <div className="mt-5">
                         <div className="ms-Grid-row">
@@ -1793,6 +2108,28 @@ export default class CallCard extends React.Component {
                                    }
                                </tbody>
                             </table>
+                        </div>
+                    </div>
+                }
+                {
+                    this.state.showPin2VideosList &&
+                    <div className="mt-5">
+                        <div>
+                            <h3>
+                                Pin 2 videos
+                            </h3>
+                        </div>
+                        <div>
+                            {this.state.allRemoteParticipantStreams.map((streamTuple) => (
+                                <div key={utils.getIdentifierText(streamTuple.participant.identifier)}>
+                                <input
+                                    type="checkbox"
+                                    checked={streamTuple.isPinned}
+                                    onChange={(e) => this.handleVideoPin(streamTuple, e)}
+                                />
+                                {utils.getIdentifierText(streamTuple.participant.identifier)}
+                                </div>
+                            ))}
                         </div>
                     </div>
                 }
